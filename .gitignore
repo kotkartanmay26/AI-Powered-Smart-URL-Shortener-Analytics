@@ -1,0 +1,39 @@
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.exe
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+backend/venv/
+venv/
+.env
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/dist/
+frontend/.vite/
+
+# Backend
+backend/alembic/versions/
+*.log
+

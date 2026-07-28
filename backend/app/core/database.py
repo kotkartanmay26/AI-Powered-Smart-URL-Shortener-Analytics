@@ -42,12 +42,24 @@ def create_tables() -> None:
     """
     Create all tables. Models are imported ONLY HERE (inside a function, after
     this module is fully initialized) to break the circular import.
+
+    Any error is caught and logged; this function never raises so that the
+    application always starts and database errors can be inspected via /health.
     """
     from app.models.user import User, RefreshToken  # noqa: F401
     from app.models.url import URL  # noqa: F401
     from app.models.click import Click  # noqa: F401
 
-    Base.metadata.create_all(bind=engine, checkfirst=True)
+    try:
+        Base.metadata.create_all(bind=engine, checkfirst=True)
+    except Exception:  # noqa: BLE001
+        # Never propagate table-creation errors at startup. Let the app start.
+        # Tables can be created later, and /health will surface DB issues.
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "create_tables() skipped (non-fatal); tables may already exist or DB is warming up."
+        )
 
 
 def get_db():

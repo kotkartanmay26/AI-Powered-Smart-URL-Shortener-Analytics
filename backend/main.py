@@ -89,9 +89,8 @@ def on_startup() -> None:
             with engine.connect() as connection:
                 connection.exec_driver_sql("SELECT 1")
             logger.info("Database connected and tables are ready")
-        except SQLAlchemyError:
-            logger.exception("Database startup failed")
-            raise
+        except Exception as exc:  # noqa: BLE001 - never crash startup; Render kills the service
+            logger.critical("Database startup step failed, but continuing app startup: %s", exc, exc_info=True)
 
 
 @app.get("/")

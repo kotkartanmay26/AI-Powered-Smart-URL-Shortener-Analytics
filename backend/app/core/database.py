@@ -17,15 +17,15 @@ def _normalize_db_url(url: str) -> str:
 
 _NORMALIZED_DB_URL = _normalize_db_url(settings.DATABASE_URL)
 
-# 1) Declare Base FIRST (so models can import it)
+# 1) Declare Base FIRST. This file must FULLY finish importing before any
+#    other module (e.g. app.models.*) imports Base from here. This is how we
+#    avoid circular/partially-initialized-module errors.
 Base = declarative_base()
 
-# 2) Import ALL models (they subclass Base, registering their tables in Base.metadata)
-from app.models.user import User, RefreshToken  # noqa: F401,E402
-from app.models.url import URL  # noqa: F401,E402
-from app.models.click import Click  # noqa: F401,E402
+# 2) DO NOT import app.models here at the top level! The models import Base
+#    from this file, so a top-level reverse import would cause ImportError:
+#    "cannot import name X from partially initialized module".
 
-# 3) Only NOW create the engine and sessionmaker (after metadata is populated)
 engine = create_engine(
     _NORMALIZED_DB_URL,
     pool_pre_ping=True,
@@ -39,7 +39,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, futu
 
 
 def create_tables() -> None:
-    """Create all registered tables (checkfirst=True so existing are left alone)."""
+    """
+    Create all tables. Models are imported ONLY HERE (inside a function, after
+    this module is fully initialized) to break the circular import.
+    """
+    from app.models.user import User, RefreshToken  # noqa: F401
+    from app.models.url import URL  # noqa: F401
+    from app.models.click import Click  # noqa: F401
+
     Base.metadata.create_all(bind=engine, checkfirst=True)
 
 

@@ -1,11 +1,13 @@
 
 import logging
 import time
+from pathlib import Path
 from collections import defaultdict, deque
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import SQLAlchemyError
 from app.services.analytics import log_click
 from app.services.url import get_url_for_redirect, mark_one_time_used, verify_url_password
@@ -15,6 +17,16 @@ from app.api.v1 import api_router
 from app.core.config import settings
 from app.core.database import create_tables, engine, get_db
 from app.schemas.url import RedirectPasswordRequest
+
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+# Known SPA routes that should NOT be treated as short codes
+KNOWN_SPA_ROUTES = {
+    "login",
+    "register",
+    "dashboard",
+    "analytics",
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("smart-url-shortener")
@@ -35,7 +47,20 @@ app.add_middleware(
 
 app.include_router(api_router)
 
+# Mount static frontend files if built
+if FRONTEND_DIST.exists():
+    if (FRONTEND_DIST / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
+
 request_buckets: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _serve_spa_index():
+    """Safely serve the SPA index.html if present."""
+    index_file = FRONTEND_DIST / "index.html"
+    if FRONTEND_DIST.exists() and index_file.exists():
+        return FileResponse(str(index_file))
+    return None
 
 
 @app.middleware("http")
@@ -71,6 +96,9 @@ def on_startup() -> None:
 
 @app.get("/")
 def root():
+    spa_response = _serve_spa_index()
+    if spa_response is not None:
+        return spa_response
     return {"message": "Welcome to Smart URL Shortener API", "docs": "/docs", "health": "/health"}
 
 
@@ -112,13 +140,27 @@ def redirect_to_original(
     request: Request,
     db: Session = Depends(get_db)
 ):
+    # Known SPA routes are not short codes — fall through to SPA
+    if short_code in KNOWN_SPA_ROUTES:
+        spa_response = _serve_spa_index()
+        if spa_response is not None:
+            return spa_response
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    # Try to find a real short URL / custom alias
     url = get_url_for_redirect(db, short_code)
-    if not url:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="URL not found or expired"
-        )
-    return redirect_or_protected(url, request, db)
+    if url:
+        return redirect_or_protected(url, request, db)
+
+    # If no short URL found, try to serve SPA (handles any new SPA routes too)
+    spa_response = _serve_spa_index()
+    if spa_response is not None:
+        return spa_response
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="URL not found or expired"
+    )
 
 
 @app.post("/{short_code}/unlock")
@@ -132,3 +174,14 @@ def unlock_protected_url(
     if not url:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="URL not found or expired")
     return redirect_or_protected(url, request, db, payload.password)
+
+
+@app.get("/{path:path}", include_in_schema=False)
+async def spa_fallback(path: str):
+    """Catch-all: serve SPA for any unmatched non-API GET routes."""
+    if path.startswith("api/") or path.startswith("docs") or path.startswith("redoc") or path == "openapi.json" or path == "health":
+        raise HTTPException(status_code=404, detail="Not found")
+    spa_response = _serve_spa_index()
+    if spa_response is not None:
+        return spa_response
+    raise HTTPException(status_code=404, detail="Not found")

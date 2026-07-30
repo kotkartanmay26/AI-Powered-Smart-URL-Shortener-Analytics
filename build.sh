@@ -37,4 +37,10 @@ python -m pip install \
   -r requirements.txt
 cd ..
 
+# --- Critical safety: DELETE any accidentally-committed .env files ---
+# On Render, the backend MUST use the DATABASE_URL that Render injects into
+# the shell environment. A committed .env file would override it, causing
+# the backend to try localhost even in production.
+find . -name ".env" -not -path "*/node_modules/*" -not -path "*/.venv/*" -not -path "*/.git/*" -print -delete || true
+
 echo "=== Build complete ==="

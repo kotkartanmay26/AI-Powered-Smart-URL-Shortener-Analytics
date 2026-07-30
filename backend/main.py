@@ -13,9 +13,10 @@ from app.services.analytics import log_click
 from app.services.url import get_url_for_redirect, mark_one_time_used, verify_url_password
 from sqlalchemy.orm import Session
 
+import os
 from app.api.v1 import api_router
 from app.core.config import settings
-from app.core.database import create_tables, engine, get_db
+from app.core.database import check_db_connectivity, create_tables, engine, get_db
 from app.schemas.url import RedirectPasswordRequest
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -83,14 +84,29 @@ async def request_context_middleware(request: Request, call_next):
 
 @app.on_event("startup")
 def on_startup() -> None:
+    # --- Environment report (Render debugging visibility) ---
+    # NEVER log secrets, so print ONLY env var NAMES + sanitized markers.
+    env_names_present = sorted(k for k in os.environ.keys() if k.startswith(("DATABASE_", "POSTGRES_", "RENDER_", "PYTHON_")))
+    logger.info(
+        "Startup env vars (names only, NO values): %s  |  SECRET_KEY set=%s  |  DATABASE_URL set=%s  |  POSTGRES_URL set=%s",
+        env_names_present or "<none>",
+        bool(os.getenv("SECRET_KEY")),
+        bool(os.getenv("DATABASE_URL")),
+        bool(os.getenv("POSTGRES_URL")),
+    )
+
     if settings.AUTO_CREATE_TABLES:
         try:
             create_tables()
-            with engine.connect() as connection:
-                connection.exec_driver_sql("SELECT 1")
-            logger.info("Database connected and tables are ready")
         except Exception as exc:  # noqa: BLE001 - never crash startup; Render kills the service
-            logger.critical("Database startup step failed, but continuing app startup: %s", exc, exc_info=True)
+            logger.critical("create_tables() failed, continuing app startup: %s", exc, exc_info=True)
+
+    db_ok, db_msg = check_db_connectivity()
+    if db_ok:
+        logger.info("Database connectivity check: %s", db_msg)
+        logger.info("Database connected and tables are ready")
+    else:
+        logger.critical("Database connectivity check: %s  (app still starts - check /health)", db_msg)
 
 
 @app.get("/")
@@ -103,9 +119,19 @@ def root():
 
 @app.get("/health")
 def health():
-    with engine.connect() as connection:
-        connection.exec_driver_sql("SELECT 1")
-    return {"status": "ok", "environment": settings.ENVIRONMENT}
+    db_ok, db_msg = check_db_connectivity()
+    code = 200 if db_ok else 503
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=code,
+        content={
+            "status": "ok" if db_ok else "db_unreachable",
+            "environment": settings.ENVIRONMENT,
+            "database": db_msg,
+            "localhost_used": "localhost" in db_msg.lower(),
+        },
+    )
 
 
 def parse_client_context(request: Request) -> dict:

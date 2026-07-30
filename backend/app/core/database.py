@@ -1,9 +1,14 @@
 
-from sqlalchemy import create_engine
+import logging
+from typing import Tuple
+
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_db_url(url: str) -> str:
@@ -15,7 +20,32 @@ def _normalize_db_url(url: str) -> str:
     return url
 
 
+def _sanitize_db_url_for_log(url: str) -> str:
+    """Return host:port/database from URL — NEVER log passwords."""
+    try:
+        # Drop the scheme first
+        if "://" in url:
+            _, body = url.split("://", 1)
+        else:
+            body = url
+        # Drop user:password@ if present
+        if "@" in body:
+            _, body = body.rsplit("@", 1)
+        return body.split("?")[0]
+    except Exception:  # noqa: BLE001
+        return "<unparseable-url>"
+
+
 _NORMALIZED_DB_URL = _normalize_db_url(settings.DATABASE_URL)
+_SANITIZED_DB_TARGET = _sanitize_db_url_for_log(_NORMALIZED_DB_URL)
+
+# Log target host once at module load time so Render logs PROVE we are not
+# using localhost in production. PASSWORD IS NEVER LOGGED.
+logger.info(
+    "SQLAlchemy target DB (host:port/db): %s  (localhost_used=%s)",
+    _SANITIZED_DB_TARGET,
+    "localhost" in _SANITIZED_DB_TARGET.lower(),
+)
 
 # 1) Declare Base FIRST. This file must FULLY finish importing before any
 #    other module (e.g. app.models.*) imports Base from here. This is how we
@@ -38,6 +68,16 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
 
 
+def check_db_connectivity() -> Tuple[bool, str]:
+    """Run a simple SELECT 1 check. Returns (ok, message)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, f"OK -> {_SANITIZED_DB_TARGET}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"FAIL -> {_SANITIZED_DB_TARGET} : {exc.__class__.__name__}: {exc}"
+
+
 def create_tables() -> None:
     """
     Create all tables. Models are imported ONLY HERE (inside a function, after
@@ -52,13 +92,14 @@ def create_tables() -> None:
 
     try:
         Base.metadata.create_all(bind=engine, checkfirst=True)
-    except Exception:  # noqa: BLE001
+        logger.info("create_tables() finished on %s", _SANITIZED_DB_TARGET)
+    except Exception as exc:  # noqa: BLE001
         # Never propagate table-creation errors at startup. Let the app start.
         # Tables can be created later, and /health will surface DB issues.
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            "create_tables() skipped (non-fatal); tables may already exist or DB is warming up."
+        logger.warning(
+            "create_tables() skipped (non-fatal) on %s : %s",
+            _SANITIZED_DB_TARGET,
+            exc,
         )
 
 
